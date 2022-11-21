@@ -14,6 +14,8 @@ import '../utils/typed_data.dart';
 import 'formatting.dart';
 import 'keccak.dart';
 import 'random_bridge.dart';
+import 'package:bip32/bip32.dart' as bip32;
+import 'package:bip39/bip39.dart' as bip39;
 
 final ECDomainParameters params = ECCurve_secp256k1();
 final BigInt _halfCurveOrder = params.n >> 1;
@@ -47,6 +49,37 @@ BigInt generateNewPrivateKey(Random random) {
   return privateKey.d!;
 }
 
+String pathRegex = r"^(m\/)?(\d+'?\/)*\d+'?$";
+
+bool isValidPath(String path) {
+  if (!RegExp(pathRegex).hasMatch(path)) {
+    return false;
+  }
+  return !path
+      .split('/')
+      .sublist(1)
+      .map(replaceDerive)
+      .any((e) => int.tryParse(e) == null);
+}
+
+String replaceDerive(String val) => val.replaceAll("'", '');
+
+Uint8List generateMnemonicPrivatesKey(
+  String mnemonic, {
+  String path = "m/44'/60'/0'/0/0",
+}) {
+  if (!isValidPath(path)) {
+    throw ArgumentError('Invalid derivation path');
+  }
+  final normalizeMnemonics =
+      mnemonic.trim().split(r'\s+').map((part) => part.toLowerCase()).join(' ');
+  String seed = bip39.mnemonicToSeedHex(normalizeMnemonics);
+  final keyBytes = hexToBytes(seed);
+  var root = bip32.BIP32.fromSeed(keyBytes);
+  var child = root.derivePath(path);
+  return child.privateKey ?? Uint8List.fromList([]);
+}
+
 /// Constructs the Ethereum address associated with the given public key by
 /// taking the lower 160 bits of the key's sha3 hash.
 Uint8List publicKeyToAddress(Uint8List publicKey) {
@@ -59,6 +92,7 @@ Uint8List publicKeyToAddress(Uint8List publicKey) {
 /// Signatures used to sign Ethereum transactions and messages.
 class MsgSignature {
   MsgSignature(this.r, this.s, this.v);
+
   final BigInt r;
   final BigInt s;
   final int v;
@@ -86,28 +120,35 @@ MsgSignature sign(Uint8List messageHash, Uint8List privateKey) {
     final canonicalisedS = params.n - sig.s;
     sig = ECSignature(sig.r, canonicalisedS);
   }
+  final publicKey = privateKeyBytesToPublic(privateKey);
+  var recId = recover(sig.r, sig.s, messageHash, publicKey);
+  return MsgSignature(sig.r, sig.s, recId + 27);
+}
 
-  final publicKey = bytesToUnsignedInt(privateKeyBytesToPublic(privateKey));
-
+int recover(
+  BigInt r,
+  BigInt s,
+  Uint8List messageHash,
+  Uint8List publicKey,
+) {
   //Implementation for calculating v naively taken from there, I don't understand
   //any of this.
   //https://github.com/web3j/web3j/blob/master/crypto/src/main/java/org/web3j/crypto/Sign.java
+  var pubKey = bytesToUnsignedInt(publicKey);
+  var ecsig = ECSignature(r, s);
   var recId = -1;
   for (var i = 0; i < 4; i++) {
-    final k = _recoverFromSignature(i, sig, messageHash, params);
-    if (k == publicKey) {
+    final k = _recoverFromSignature(i, ecsig, messageHash, params);
+    if (k == pubKey) {
       recId = i;
       break;
     }
   }
 
   if (recId == -1) {
-    throw Exception(
-      'Could not construct a recoverable key. This should never happen',
-    );
+    throw Exception('Could not construct a recoverable key. This should never happen');
   }
-
-  return MsgSignature(sig.r, sig.s, recId + 27);
+  return recId;
 }
 
 /// Given an arbitrary message hash and an Ethereum message signature encoded in bytes, returns
@@ -221,4 +262,34 @@ ECPoint _decompressKey(BigInt xBN, bool yBit, ECCurve c) {
   final compEnc = x9IntegerToBytes(xBN, 1 + ((c.fieldSize + 7) ~/ 8));
   compEnc[0] = yBit ? 0x03 : 0x02;
   return c.decodePoint(compEnc)!;
+}
+
+
+class ECSignatureV extends ECSignature {
+
+  ECSignatureV(this.v, BigInt r, BigInt s): super(r, s);
+
+  final int v;
+
+  String hexEncode() {
+    final rHex = r.toRadixString(16).padLeft(64, '0');
+    final sHex = s.toRadixString(16).padLeft(64, '0');
+    final vHex = v.toRadixString(16).padLeft(2, '0');
+    return rHex + sHex + vHex;
+  }
+
+  String toString() => '${hexEncode()}';
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is ECSignatureV &&
+        this.v == other.v && this.r == other.r && this.s == other.s;
+  }
+
+  int get hashCode {
+    return v.hashCode + r.hashCode + s.hashCode;
+  }
 }

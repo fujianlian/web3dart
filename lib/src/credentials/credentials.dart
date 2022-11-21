@@ -111,6 +111,14 @@ class EthPrivateKey extends CredentialsWithKnownAddress {
     return EthPrivateKey(intToBytes(key));
   }
 
+  factory EthPrivateKey.createMnemonic(
+    String mnemonic, {
+    String path = "m/44'/60'/0'/0/0",
+  }) {
+    final key = generateMnemonicPrivatesKey(mnemonic, path: path);
+    return EthPrivateKey(key);
+  }
+
   /// ECC's d private parameter.
   final BigInt privateKeyInt;
   final Uint8List privateKey;

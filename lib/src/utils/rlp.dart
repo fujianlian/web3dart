@@ -79,7 +79,7 @@ void _encodeToBuffer(dynamic value, LengthTrackingByteSink builder) {
   }
 }
 
-List<int> encode(dynamic value) {
+Uint8List encode(dynamic value) {
   final builder = LengthTrackingByteSink();
   _encodeToBuffer(value, builder);
 
